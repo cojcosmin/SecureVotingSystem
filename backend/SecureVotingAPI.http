@@ -1,0 +1,6 @@
+@SecureVotingAPI_HostAddress = http://localhost:5127
+
+GET {{SecureVotingAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

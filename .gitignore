@@ -1,0 +1,18 @@
+# .NET / Visual Studio
+**/bin/
+**/obj/
+**/.vs/
+*.user
+*.suo
+**/appsettings.Development.json
+
+# Node / React / Vite
+**/node_modules/
+**/dist/
+**/.vite/
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
