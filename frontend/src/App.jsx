@@ -13,6 +13,9 @@ import {
   Edit3,
   BarChart3,
   Vote,
+  Sparkles,
+  Fingerprint,
+  Activity,
 } from "lucide-react";
 import {
   PieChart,
@@ -58,6 +61,19 @@ const TABS = [
   { id: "benchmark", label: "Benchmark" },
 ];
 
+// Calculează SHA-256 în format Base64 identic cu C# (Convert.ToBase64String)
+async function computeSha256Base64(text) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(text);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const bytes = new Uint8Array(hashBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("vote");
   const [audit, setAudit] = useState(null);
@@ -71,10 +87,30 @@ export default function App() {
   const [attackBlockId, setAttackBlockId] = useState("2");
   const [fakeCandidate, setFakeCandidate] = useState("Candidat C");
 
+  // Simulator Efectul de Avalanșă (SHA-256)
+  const [avalancheBase, setAvalancheBase] = useState("Candidat A");
+  const [avalancheModified, setAvalancheModified] = useState("Candidat a");
+  const [baseHash, setBaseHash] = useState("");
+  const [modifiedHash, setModifiedHash] = useState("");
+
+  // Contor fraude blocate/detectate + Jurnal de evenimente
+  const [securityAlertsCount, setSecurityAlertsCount] = useState(0);
+  const [eventLog, setEventLog] = useState([]);
+
   // UI states
   const [loading, setLoading] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
   const [benchLoading, setBenchLoading] = useState(false);
   const [toast, setToast] = useState(null);
+
+  const addLog = (type, message) => {
+    const time = new Date().toLocaleTimeString("ro-RO", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    setEventLog((prev) => [{ id: Date.now() + Math.random(), time, type, message }, ...prev.slice(0, 14)]);
+  };
 
   const showToast = (type, text) => {
     setToast({ type, text });
@@ -91,14 +127,33 @@ export default function App() {
       setAudit(auditData);
       setResults(resultsData);
       setChain(chainData);
-    } catch (err) {
+      return auditData;
+    } catch {
       showToast("error", "API-ul C# nu răspunde pe localhost:5127. Pornește SecureVotingAPI.");
+      return null;
     }
   };
 
   useEffect(() => {
     refreshData();
   }, []);
+
+  // Recalculare live pentru Efectul de Avalanșă
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      computeSha256Base64(avalancheBase),
+      computeSha256Base64(avalancheModified),
+    ]).then(([h1, h2]) => {
+      if (!cancelled) {
+        setBaseHash(h1);
+        setModifiedHash(h2);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [avalancheBase, avalancheModified]);
 
   const handleVote = async (e) => {
     e.preventDefault();
@@ -110,12 +165,40 @@ export default function App() {
     try {
       const res = await votingApi.castVote(cnp.trim(), selectedCandidate);
       showToast("success", res.message);
+      addLog("success", `Vot anonimizat înregistrat (${selectedCandidate}) — tranzacție COMMIT.`);
       setCnp("");
       await refreshData();
     } catch (err) {
       showToast("error", err.message);
+      setSecurityAlertsCount((c) => c + 1);
+      addLog("danger", `Vot duplicat respins de PostgreSQL (Rollback ACID) — CNP blocat.`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePopulateDemo = async () => {
+    setDemoLoading(true);
+    const stamp = Date.now().toString().slice(-5);
+    const demoVotes = [
+      { cnp: `1990101${stamp}1`, candidate: "Candidat A" },
+      { cnp: `2980512${stamp}2`, candidate: "Candidat B" },
+      { cnp: `5010923${stamp}3`, candidate: "Candidat A" },
+      { cnp: `6021104${stamp}4`, candidate: "Candidat C" },
+      { cnp: `1970718${stamp}5`, candidate: "Candidat B" },
+    ];
+
+    try {
+      for (const item of demoVotes) {
+        await votingApi.castVote(item.cnp, item.candidate);
+      }
+      showToast("success", "Au fost inserate 5 voturi distincte în lanț.");
+      addLog("success", "Scenariu Demo: 5 voturi distincte criptate și adăugate în Hash Chain.");
+      await refreshData();
+    } catch (err) {
+      showToast("error", err.message);
+    } finally {
+      setDemoLoading(false);
     }
   };
 
@@ -125,6 +208,9 @@ export default function App() {
       const res = await votingApi.resetDb();
       showToast("success", res.message);
       setBenchmark([]);
+      setSecurityAlertsCount(0);
+      setEventLog([]);
+      addLog("info", "Baza de date a fost resetată la Genesis Block (#0).");
       await refreshData();
     } catch (err) {
       showToast("error", err.message);
@@ -138,7 +224,12 @@ export default function App() {
     try {
       const res = await votingApi.attackUpdate(attackBlockId, fakeCandidate);
       showToast("warning", res.message);
-      await refreshData();
+      addLog("warning", `Simulare SQL UPDATE executată pe Bloc #${attackBlockId}.`);
+      const auditData = await refreshData();
+      if (auditData && !auditData.isValid) {
+        setSecurityAlertsCount((c) => c + 1);
+        addLog("danger", `ALERTĂ AUDIT: ${auditData.message}`);
+      }
     } catch (err) {
       showToast("error", err.message);
     } finally {
@@ -151,7 +242,12 @@ export default function App() {
     try {
       const res = await votingApi.attackDelete(attackBlockId);
       showToast("warning", res.message);
-      await refreshData();
+      addLog("warning", `Simulare SQL DELETE executată pe Bloc #${attackBlockId}.`);
+      const auditData = await refreshData();
+      if (auditData && !auditData.isValid) {
+        setSecurityAlertsCount((c) => c + 1);
+        addLog("danger", `ALERTĂ AUDIT: ${auditData.message}`);
+      }
     } catch (err) {
       showToast("error", err.message);
     } finally {
@@ -165,6 +261,13 @@ export default function App() {
       const data = await votingApi.runBenchmark();
       setBenchmark(data);
       showToast("success", "Benchmark finalizat pentru 100 / 1.000 / 5.000 voturi.");
+      const maxRun = data[data.length - 1];
+      if (maxRun) {
+        addLog(
+          "info",
+          `Benchmark 5.000 voturi: ${maxRun.votesPerSec} voturi/s, audit în ${maxRun.auditMs} ms.`
+        );
+      }
       await refreshData();
     } catch (err) {
       showToast("error", err.message);
@@ -172,6 +275,14 @@ export default function App() {
       setBenchLoading(false);
     }
   };
+
+  // Calcul procent caractere diferite pentru Efectul de Avalanșă
+  const diffCount =
+    baseHash && modifiedHash
+      ? [...modifiedHash].filter((ch, i) => ch !== baseHash[i]).length
+      : 0;
+  const diffPercent =
+    baseHash.length > 0 ? Math.round((diffCount / baseHash.length) * 100) : 0;
 
   const totalVotes = audit?.totalVotes ?? 0;
   const isChainValid = audit?.isValid ?? true;
@@ -181,7 +292,7 @@ export default function App() {
     <div className="min-h-screen bg-[#0B0B0D] text-white px-4 py-6 md:px-8">
       <div className="max-w-5xl mx-auto space-y-6">
         {/* Header */}
-        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-[#1C1C20] border border-[#2A2A2F] flex items-center justify-center">
               <Vote className="w-5 h-5 text-white" />
@@ -199,7 +310,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Status Lanț */}
             <div
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border ${
                 isChainValid
@@ -215,6 +327,29 @@ export default function App() {
               {isChainValid ? "Lanț Intact" : "Fraudă Detectată"}
             </div>
 
+            {/* Contor Tentative / Fraude Blocate */}
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${
+                securityAlertsCount > 0
+                  ? "bg-[#EF4444]/10 border-[#EF4444]/30 text-[#F87171]"
+                  : "bg-[#161619] border-[#26262A] text-[#8E8E93]"
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Fraude blocate/detectate: {securityAlertsCount}</span>
+            </div>
+
+            {/* Populează Demo 1-Click */}
+            <button
+              onClick={handlePopulateDemo}
+              disabled={demoLoading || loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 border border-[#3B82F6]/40 text-xs font-medium text-[#60A5FA] transition cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${demoLoading ? "animate-spin" : ""}`} />
+              {demoLoading ? "Se adaugă..." : "Populează Demo (5 voturi)"}
+            </button>
+
+            {/* Reset DB */}
             <button
               onClick={handleReset}
               disabled={loading}
@@ -334,11 +469,13 @@ export default function App() {
                 disabled={loading}
                 className="w-full py-3.5 rounded-2xl bg-white hover:bg-[#E5E5EA] text-black font-semibold text-sm transition cursor-pointer disabled:opacity-50"
               >
-                {loading ? "Se procesează tranzacția..." : `Confirmă votul pentru ${selectedCandidate}`}
+                {loading
+                  ? "Se procesează tranzacția..."
+                  : `Confirmă votul pentru ${selectedCandidate}`}
               </button>
             </form>
 
-            {/* Info Panel (stil XTB informativ) */}
+            {/* Info Panel */}
             <div className="lg:col-span-5 bg-[#161619] border border-[#26262A] rounded-2xl p-6 space-y-6 h-fit">
               <h3 className="text-xl font-semibold tracking-tight">
                 Garanții de securitate
@@ -352,7 +489,8 @@ export default function App() {
                   <div>
                     <h4 className="text-sm font-semibold">Anonimizare ireversibilă (GDPR)</h4>
                     <p className="text-xs text-[#8E8E93] mt-1 leading-relaxed">
-                      CNP-ul nu este stocat niciodată în clar. Se salvează doar hash-ul SHA-256 + Salt în tabela separată <code className="text-[#C7C7CC]">voter_records</code>.
+                      CNP-ul nu este stocat niciodată în clar. Se salvează doar hash-ul SHA-256 + Salt în tabela separată{" "}
+                      <code className="text-[#C7C7CC]">voter_records</code>.
                     </p>
                   </div>
                 </div>
@@ -446,7 +584,7 @@ export default function App() {
                   <h3 className="text-base font-semibold">Clasament Candidați</h3>
                   {results.length === 0 ? (
                     <p className="text-sm text-[#8E8E93]">
-                      Înregistrează un vot din tab-ul Votare sau rulează Benchmark-ul.
+                      Apasă „Populează Demo (5 voturi)” din header sau votează manual.
                     </p>
                   ) : (
                     <div className="divide-y divide-[#26262A]">
@@ -514,8 +652,10 @@ export default function App() {
                     </p>
                   </div>
                   <div>
-                    <span className="text-xs text-[#8E8E93]">Algoritm Criptografic</span>
-                    <p className="text-lg font-semibold mt-0.5">SHA-256 + Salt</p>
+                    <span className="text-xs text-[#8E8E93]">Tentative Fraude Blocate</span>
+                    <p className="text-lg font-semibold mt-0.5 text-[#F87171]">
+                      {securityAlertsCount}
+                    </p>
                   </div>
                   <div>
                     <span className="text-xs text-[#8E8E93]">Complexitate Audit</span>
@@ -561,12 +701,82 @@ export default function App() {
               </button>
             </div>
 
+            {/* Simulator Efectul de Avalanșă (SHA-256 Live) */}
+            <div className="bg-[#161619] border border-[#26262A] rounded-2xl p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-[#222227] flex items-center justify-center">
+                    <Fingerprint className="w-4 h-4 text-[#60A5FA]" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold">
+                      Simulator „Efectul de Avalanșă” (SHA-256 Live)
+                    </h3>
+                    <p className="text-xs text-[#8E8E93]">
+                      Schimbă o singură literă mai jos și observă cum întreaga amprentă criptografică se transformă.
+                    </p>
+                  </div>
+                </div>
+                <span className="text-xs font-medium px-3 py-1 rounded-full bg-[#3B82F6]/15 border border-[#3B82F6]/30 text-[#60A5FA] w-fit">
+                  {diffPercent}% din hash modificat
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-[#0B0B0D] border border-[#26262A] rounded-xl p-3.5 space-y-2">
+                  <label className="block text-[11px] uppercase tracking-wider text-[#8E8E93]">
+                    Date originale
+                  </label>
+                  <input
+                    type="text"
+                    value={avalancheBase}
+                    onChange={(e) => setAvalancheBase(e.target.value)}
+                    className="w-full bg-[#161619] border border-[#2A2A30] focus:border-white rounded-lg px-3 py-1.5 text-sm outline-none"
+                  />
+                  <div
+                    className="text-xs text-[#4ADE80] break-all pt-1"
+                    style={{ fontFamily: "'Space Mono', monospace" }}
+                  >
+                    {baseHash}
+                  </div>
+                </div>
+
+                <div className="bg-[#0B0B0D] border border-[#26262A] rounded-xl p-3.5 space-y-2">
+                  <label className="block text-[11px] uppercase tracking-wider text-[#8E8E93]">
+                    Date alterate (testează modificarea unui caracter)
+                  </label>
+                  <input
+                    type="text"
+                    value={avalancheModified}
+                    onChange={(e) => setAvalancheModified(e.target.value)}
+                    className="w-full bg-[#161619] border border-[#2A2A30] focus:border-white rounded-lg px-3 py-1.5 text-sm outline-none"
+                  />
+                  <div
+                    className="text-xs break-all pt-1"
+                    style={{ fontFamily: "'Space Mono', monospace" }}
+                  >
+                    {[...modifiedHash].map((char, idx) => (
+                      <span
+                        key={idx}
+                        className={
+                          char !== baseHash[idx] ? "text-[#F87171] font-bold" : "text-[#4ADE80]"
+                        }
+                      >
+                        {char}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Attack Simulator */}
             <div className="bg-[#161619] border border-[#26262A] rounded-2xl p-5 space-y-4">
               <div>
                 <h3 className="text-base font-semibold">Simulare Atac Direct în PostgreSQL</h3>
                 <p className="text-xs text-[#8E8E93] mt-0.5">
-                  Testează reacția sistemului la un atacator intern cu acces SQL direct pe tabela <code className="text-[#C7C7CC]">vote_chain</code>.
+                  Testează reacția sistemului la un atacator intern cu acces SQL direct pe tabela{" "}
+                  <code className="text-[#C7C7CC]">vote_chain</code>.
                 </p>
               </div>
 
@@ -707,7 +917,6 @@ export default function App() {
 
             {benchmark.length > 0 ? (
               <>
-                {/* Bar Chart (stil Date financiare) */}
                 <div className="bg-[#161619] border border-[#26262A] rounded-2xl p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -775,7 +984,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Metrics Table */}
                 <div className="bg-[#161619] border border-[#26262A] rounded-2xl p-5 overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead>
@@ -816,6 +1024,65 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* Jurnal Cronologic de Securitate & Evenimente (mereu vizibil) */}
+        <section className="bg-[#161619] border border-[#26262A] rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-[#8E8E93]" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8E8E93]">
+                Jurnal de Evenimente & Securitate (Live)
+              </h3>
+            </div>
+            <span className="text-xs text-[#8E8E93]">
+              {eventLog.length} {eventLog.length === 1 ? "eveniment" : "evenimente"}
+            </span>
+          </div>
+
+          {eventLog.length === 0 ? (
+            <p className="text-xs text-[#6E6E73]">
+              Acțiunile (voturi, tentative respinse, simulări de atac, audit) vor apărea cronologic aici.
+            </p>
+          ) : (
+            <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+              {eventLog.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-2.5 text-xs py-1 border-b border-[#222227] last:border-none"
+                >
+                  <span
+                    className="text-[#6E6E73] shrink-0"
+                    style={{ fontFamily: "'Space Mono', monospace" }}
+                  >
+                    [{entry.time}]
+                  </span>
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      entry.type === "danger"
+                        ? "bg-[#EF4444]"
+                        : entry.type === "warning"
+                        ? "bg-[#F59E0B]"
+                        : entry.type === "success"
+                        ? "bg-[#22C55E]"
+                        : "bg-[#60A5FA]"
+                    }`}
+                  />
+                  <span
+                    className={
+                      entry.type === "danger"
+                        ? "text-[#F87171] font-medium"
+                        : entry.type === "warning"
+                        ? "text-[#FBBF24]"
+                        : "text-[#D1D1D6]"
+                    }
+                  >
+                    {entry.message}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
